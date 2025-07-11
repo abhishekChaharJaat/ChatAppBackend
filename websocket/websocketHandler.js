@@ -23,7 +23,7 @@ function initializeWebSocket(server) {
 
   wss.on("connection", (ws, req) => {
     // Get userId from query parameters
-    const url = new URL(req.url, "ws://localhost");
+    const url = new URL(req.url, `ws://${req.headers.host}`);
     const userId = url.searchParams.get("userId");
 
     if (!userId) {
