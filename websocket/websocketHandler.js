@@ -2,9 +2,8 @@ const WebSocket = require("ws");
 const Message = require("../models/Message");
 const clerk = require("../config/clerk");
 
-const clients = new Map(); // userId -> WebSocket
+const clients = new Map();
 
-// Function to broadcast online status to all connected clients
 function broadcastOnlineStatus() {
   const message = JSON.stringify({
     type: "active_status",
@@ -19,79 +18,68 @@ function broadcastOnlineStatus() {
 }
 
 function initializeWebSocket(server) {
-  const wss = new WebSocket.Server({ server });
+  const wss = new WebSocket.Server({ server, path: "/ws" });
 
-  wss.on("connection", (ws, req) => {
-    // Get userId from query parameters
-    const url = new URL(req.url, `ws://${req.headers.host}`);
-    const userId = url.searchParams.get("userId");
+  wss.on("connection", async (ws, req) => {
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const userId = url.searchParams.get("userId");
 
-    if (!userId) {
-      ws.close(1008, "User ID is required");
-      return;
-    }
+      if (!userId) {
+        ws.close(1008, "User ID is required");
+        return;
+      }
 
-    // Store the WebSocket connection with the user ID
-    clients.set(userId, ws);
-    ws.userId = userId;
-    console.log(`User ${userId} connected`);
+      clients.set(userId, ws);
+      ws.userId = userId;
+      console.log(`✅ User ${userId} connected`);
 
-    // Broadcast that this user is now online
-    broadcastOnlineStatus();
+      broadcastOnlineStatus();
 
-    // Handle incoming messages
-    ws.on("message", async (message) => {
-      try {
-        const messageData = JSON.parse(message);
-        console.log(messageData);
-
-        // Handle chat message
-        const { senderId, recipientId, content } = messageData;
-
-        const sender = await clerk.users.getUser(senderId);
-
-        const newMessage = new Message({
-          senderId,
-          senderName: `${sender.firstName || ""} ${
+      ws.on("message", async (message) => {
+        try {
+          const { senderId, recipientId, content } = JSON.parse(message);
+          const sender = await clerk.users.getUser(senderId);
+          const senderName = `${sender.firstName || ""} ${
             sender.lastName || ""
-          }`.trim(),
-          recipientId,
-          content,
-        });
+          }`.trim();
 
-        await newMessage.save();
+          const newMessage = new Message({
+            senderId,
+            senderName,
+            recipientId,
+            content,
+          });
 
-        // Forward message to recipient if connected
-        const recipientMessage = JSON.stringify({
-          type: "new_message",
-          senderId,
-          senderName: `${sender.firstName || ""} ${
-            sender.lastName || ""
-          }`.trim(),
-          content,
-          timestamp: newMessage.timestamp,
-        });
-        const recipientWs = clients.get(recipientId);
-        if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
-          recipientWs.send(recipientMessage);
+          await newMessage.save();
+
+          const recipientWs = clients.get(recipientId);
+          if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
+            recipientWs.send(
+              JSON.stringify({
+                type: "new_message",
+                senderId,
+                senderName,
+                content,
+                timestamp: newMessage.timestamp,
+              })
+            );
+          }
+        } catch (err) {
+          console.error("❌ WebSocket message error:", err);
+          ws.send(JSON.stringify({ error: "Message error" }));
         }
-      } catch (err) {
-        console.error("WebSocket message error:", err);
-        ws.send(
-          JSON.stringify({ error: "Invalid message format or server error" })
-        );
-      }
-    });
+      });
 
-    // Handle disconnects and cleanup
-    ws.on("close", () => {
-      if (ws.userId) {
+      ws.on("close", () => {
         clients.delete(ws.userId);
-        console.log(`User ${ws.userId} disconnected`);
-        // Broadcast that this user is now offline
+        console.log(`❌ User ${ws.userId} disconnected`);
         broadcastOnlineStatus();
-      }
-    });
+      });
+    } catch (err) {
+      console.error("❌ WebSocket connection error:", err);
+      ws.close(1011, "Server error");
+    }
   });
 
   return wss;
